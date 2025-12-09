@@ -1,157 +1,143 @@
-import gspread
-from google.oauth2.service_account import Credentials
-from datetime import datetime, date
-import asyncio
-from typing import Dict, List, Optional
+"""
+Менеджер Google Sheets - управляет доступом и операциями с таблицами
+"""
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+from google.auth.exceptions import GoogleAuthError
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+import logging
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+
 from config import config
-from logger import logger
+from logger import setup_logger
+
+logger = setup_logger(__name__)
 
 class SheetsManager:
+    """Менеджер для работы с Google Sheets"""
+    
+    SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+    
     def __init__(self):
-        self.scope = [
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive'
-        ]
+        """Инициализация менеджера Sheets"""
+        self.service = None
+        self.spreadsheet_id = config.GOOGLE_SHEET_ID
+        self._authenticate()
+    
+    def _authenticate(self):
+        """Аутентификация с Google API"""
         try:
-            self.creds = Credentials.from_service_account_file(
-                config.CREDENTIALS_FILE, 
-                scopes=self.scope
+            # Загружаем сервис-аккаунт из JSON
+            credentials = service_account.Credentials.from_service_account_file(
+                config.GOOGLE_CREDENTIALS_FILE,
+                scopes=self.SCOPES
             )
-            self.client = gspread.authorize(self.creds)
-            self.sheet = self.client.open_by_key(config.SPREADSHEET_ID)
-            self._init_sheets()
-            logger.info("✅ Google Sheets подключен успешно!")
+            self.service = build("sheets", "v4", credentials=credentials)
+            logger.info("✅ Google Sheets аутентификация успешна")
+        except GoogleAuthError as e:
+            logger.error(f"❌ Ошибка аутентификации Google: {e}")
+            raise
         except Exception as e:
-            logger.error(f"❌ Ошибка подключения к Google Sheets: {e}")
-            self.sheet = None
+            logger.error(f"❌ Неожиданная ошибка при аутентификации: {e}")
+            raise
     
-    def _init_sheets(self):
-        """Инициализация листов"""
+    def get_values(self, range_name: str) -> Optional[List[List[str]]]:
+        """Получить значения из диапазона"""
         try:
-            self.prayer_times_ws = self.sheet.worksheet(config.PRAYER_SHEET_NAME)
-            logger.info(f"✅ Лист '{config.PRAYER_SHEET_NAME}' найден")
-        except gspread.exceptions.WorksheetNotFound:
-            logger.info(f"⚠️ Создаю лист '{config.PRAYER_SHEET_NAME}'...")
-            self.prayer_times_ws = self.sheet.add_worksheet(
-                title=config.PRAYER_SHEET_NAME, 
-                rows=365, 
-                cols=6
-            )
-            self._setup_prayer_times_sheet()
-        
-        try:
-            self.tracking_ws = self.sheet.worksheet(config.TRACKING_SHEET_NAME)
-            logger.info(f"✅ Лист '{config.TRACKING_SHEET_NAME}' найден")
-        except gspread.exceptions.WorksheetNotFound:
-            logger.info(f"⚠️ Создаю лист '{config.TRACKING_SHEET_NAME}'...")
-            self.tracking_ws = self.sheet.add_worksheet(
-                title=config.TRACKING_SHEET_NAME,
-                rows=10000,
-                cols=6
-            )
-            self._setup_tracking_sheet()
-    
-    def _setup_prayer_times_sheet(self):
-        """Инициализация PrayerTimes листа"""
-        headers = ["Date"] + config.PRAYER_NAMES
-        self.prayer_times_ws.insert_row(headers, 1)
-        logger.info("✅ PrayerTimes заголовки добавлены")
-    
-    def _setup_tracking_sheet(self):
-        """Инициализация Tracking листа"""
-        headers = ["Date", "Time", "Prayer", "Read?", "Timestamp"]
-        self.tracking_ws.insert_row(headers, 1)
-        logger.info("✅ Tracking заголовки добавлены")
-    
-    async def get_today_prayer_times(self) -> Optional[Dict[str, str]]:
-        """Получить времена намаза на сегодня из Sheets"""
-        await asyncio.sleep(0)
-        
-        if not self.sheet:
-            logger.error("❌ Google Sheets не подключен")
+            result = self.service.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name
+            ).execute()
+            
+            values = result.get("values", [])
+            logger.info(f"✅ Получены значения из {range_name}")
+            return values
+        except HttpError as e:
+            logger.error(f"❌ Ошибка HTTP при чтении Sheets: {e}")
             return None
-        
-        today = date.today().isoformat()
-        try:
-            # Ищем сегодняшнюю дату в PrayerTimes листе
-            cells = self.prayer_times_ws.findall(today)
-            
-            if not cells:
-                logger.warning(f"❌ Нет времен намаза для {today}")
-                return None
-            
-            row_idx = cells[0].row
-            row_data = self.prayer_times_ws.row_values(row_idx)
-            
-            # row_data = ["2025-12-06", "06:15", "12:30", "16:45", "18:04", "19:30"]
-            prayer_times = {}
-            for i, prayer_name in enumerate(config.PRAYER_NAMES):
-                if i + 1 < len(row_data):
-                    prayer_times[prayer_name] = row_data[i + 1]
-            
-            logger.info(f"✅ Времена намаза загружены: {prayer_times}")
-            return prayer_times
-            
         except Exception as e:
-            logger.error(f"❌ Ошибка при загрузке времен: {e}")
+            logger.error(f"❌ Ошибка при чтении Sheets: {e}")
             return None
     
-    async def log_prayer_notification(
-        self,
-        prayer_name: str,
-        read_status: str = "⏳"
-    ):
-        """Логировать уведомление о намазе"""
-        await asyncio.sleep(0)
-        
-        if not self.sheet:
-            return
-        
-        now = datetime.now()
-        date_str = now.strftime("%Y-%m-%d")
-        time_str = now.strftime("%H:%M:%S")
-        timestamp = now.isoformat()
-        
+    def update_values(self, range_name: str, values: List[List[str]]) -> bool:
+        """Обновить значения в диапазоне"""
         try:
-            self.tracking_ws.append_row([
-                date_str,
-                time_str,
-                prayer_name,
-                read_status,
-                timestamp
-            ])
-            logger.info(f"✅ {prayer_name} записан в таблицу")
+            body = {"values": values}
+            
+            result = self.service.spreadsheets().values().update(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name,
+                valueInputOption="USER_ENTERED",
+                body=body
+            ).execute()
+            
+            logger.info(f"✅ Обновлены {result.get('updatedCells')} ячеек в {range_name}")
+            return True
+        except HttpError as e:
+            logger.error(f"❌ Ошибка HTTP при записи в Sheets: {e}")
+            return False
         except Exception as e:
-            logger.error(f"❌ Ошибка логирования: {e}")
+            logger.error(f"❌ Ошибка при записи в Sheets: {e}")
+            return False
     
-    async def update_prayer_response(
-        self,
-        prayer_name: str,
-        read_status: str
-    ):
-        """Обновить ответ пользователя"""
-        await asyncio.sleep(0)
-        
-        if not self.sheet:
-            return
-        
-        now = datetime.now()
-        date_str = now.strftime("%Y-%m-%d")
-        
+    def append_values(self, range_name: str, values: List[List[str]]) -> bool:
+        """Добавить значения в конец диапазона"""
         try:
-            # Ищем последнюю запись с этим намазом в этот день
-            cells = self.tracking_ws.findall(prayer_name)
+            body = {"values": values}
             
-            for cell in reversed(cells):
-                row_data = self.tracking_ws.row_values(cell.row)
-                if len(row_data) > 0 and row_data[0] == date_str:
-                    # Обновляем колонку "Read?" (4-я колонка)
-                    self.tracking_ws.update_cell(cell.row, 4, read_status)
-                    logger.info(f"✅ {prayer_name}: {read_status}")
-                    return
+            result = self.service.spreadsheets().values().append(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name,
+                valueInputOption="USER_ENTERED",
+                body=body
+            ).execute()
             
+            logger.info(f"✅ Добавлены {result.get('updates').get('updatedRows')} строк в {range_name}")
+            return True
+        except HttpError as e:
+            logger.error(f"❌ Ошибка HTTP при добавлении в Sheets: {e}")
+            return False
         except Exception as e:
-            logger.error(f"❌ Ошибка обновления: {e}")
+            logger.error(f"❌ Ошибка при добавлении в Sheets: {e}")
+            return False
+    
+    def clear_range(self, range_name: str) -> bool:
+        """Очистить диапазон"""
+        try:
+            self.service.spreadsheets().values().clear(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name
+            ).execute()
+            
+            logger.info(f"✅ Диапазон {range_name} очищен")
+            return True
+        except HttpError as e:
+            logger.error(f"❌ Ошибка HTTP при очистке Sheets: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Ошибка при очистке Sheets: {e}")
+            return False
+    
+    def batch_update(self, requests: List[Dict[str, Any]]) -> bool:
+        """Пакетное обновление таблицы"""
+        try:
+            body = {"requests": requests}
+            
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body=body
+            ).execute()
+            
+            logger.info(f"✅ Выполнено {len(requests)} пакетных операций")
+            return True
+        except HttpError as e:
+            logger.error(f"❌ Ошибка HTTP при пакетном обновлении: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Ошибка при пакетном обновлении: {e}")
+            return False
 
+# ✅ Глобальный экземпляр
 sheets_manager = SheetsManager()
-

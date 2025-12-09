@@ -1,32 +1,54 @@
-from pydantic_settings import BaseSettings
-from typing import List
+"""
+Конфигурация для Prayer Tracker Bot
+"""
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
+from typing import List
+from pydantic_settings import BaseSettings
+from pydantic import ConfigDict, Field
 
 class Config(BaseSettings):
     # ============ TELEGRAM ============
-    BOT_TOKEN: str = os.getenv("BOT_TOKEN", "8234743285:AAGJ3pCwuNBtwKRjVMVnD0jzMX8om8gePhA")
+    bot_token: str = Field(
+        default="8234743285:AAGJ3pCwuNBtwKRjVMVnD0jzMX8om8gePhA",
+        alias="BOT_TOKEN"
+    )
     
     # ============ GOOGLE SHEETS ============
-    SPREADSHEET_ID: str = os.getenv("SPREADSHEET_ID", "YOUR_SPREADSHEET_ID")
-    CREDENTIALS_FILE: str = "credentials.json"
+    spreadsheet_id: str = Field(
+        default="1DhG3PolBXO9BOc6bUDIQqc7f75nIZPt15i2X7U9tO1U",
+        alias="SPREADSHEET_ID"
+    )
+    
+    spreadsheet_name: str = "Tracker bot"
+    
+    credentials_file: str = Field(
+        default="credentials.json",
+        alias="CREDENTIALS_FILE"
+    )
     
     # ============ PRAYER SETTINGS ============
-    PRAYER_NAMES: List[str] = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"]
-    PRAYER_SHEET_NAME: str = "PrayerTimes"
-    TRACKING_SHEET_NAME: str = "PrayerTracking"
-    
-    # ============ TIMEZONE ============
-    TIMEZONE: str = "Europe/Moscow"
+    prayer_names: List[str] = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"]
     
     # ============ LOGGING ============
-    LOG_LEVEL: str = "INFO"
+    log_level: str = Field(
+        default="INFO",
+        alias="LOG_LEVEL"
+    )
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+        populate_by_name=True  # ✅ Принимаем оба варианта имён
+    )
+    
+    # ✅ PROPERTIES для обратной совместимости
+    @property
+    def sheets_id(self) -> str:
+        return self.spreadsheet_id
+    
+    @property
+    def BOT_TOKEN(self) -> str:
+        return self.bot_token
 
 config = Config()
-
